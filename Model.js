@@ -10,6 +10,7 @@ var DEFAULTS = {
   persistentWorkspaces: 5,    // workspaces 1..N are always shown
   hideEmpty: false,           // hide empty workspaces, even persistent ones
   perMonitor: false,          // only list workspaces on this bar's monitor
+  virtualDesktops: false,     // pills are virtual desktops (hyprland-virtual-desktops)
   iconSize: 16,
   maxIcons: 8,                // overflow collapses into a "+N" chip
   groupApps: false,           // one icon per app, with a window count
@@ -70,6 +71,7 @@ function resolveSettings(raw) {
     persistentWorkspaces: clampInt(s.persistentWorkspaces, 0, 10, d.persistentWorkspaces),
     hideEmpty: bool(s.hideEmpty, d.hideEmpty),
     perMonitor: bool(s.perMonitor, d.perMonitor),
+    virtualDesktops: bool(s.virtualDesktops, d.virtualDesktops),
     iconSize: clampInt(s.iconSize, 12, 24, d.iconSize),
     maxIcons: clampInt(s.maxIcons, 1, 20, d.maxIcons),
     groupApps: bool(s.groupApps, d.groupApps),
@@ -151,6 +153,48 @@ function workspaceLabel(id, focused, style) {
   if (style === "none") return ""
   if (style === "glyph" && focused) return "󱓻"
   return id === 10 ? "0" : String(id)
+}
+
+// ---------------------------------------------------- virtual desktops
+//
+// The hyprland-virtual-desktops plugin bundles one Hyprland workspace per
+// monitor into a logical "virtual desktop" (vdesk): vdesk N owns workspaces
+// (N-1)*monitors+1 .. N*monitors, so with two monitors vdesk 1 owns
+// workspaces 1 and 2. The bar groups pills the same way and labels them by
+// vdesk number, matching the SUPER+N keybinds.
+
+// Virtual desktop owning a workspace id, or 0 for non-positive ids.
+// `monitors` is the enabled monitor count the vdesk ranges were built from.
+function vdeskOf(workspaceId, monitors) {
+  if (!workspaceId || workspaceId < 1) return 0
+  if (!monitors || monitors < 1) return 0
+  return Math.ceil(workspaceId / monitors)
+}
+
+// Merges a per-workspace map ({ [wsId]: { windows: [...] } }) into one
+// vdesk map ({ [vdesk]: { id, windows } }): every member workspace's windows
+// combined and re-sorted left-to-right, so a pill shows both monitors' apps
+// in screen order. Workspace ids outside every vdesk range cannot happen
+// (ceil covers all positive ids) but are skipped defensively.
+function vdeskMap(workspaceMap, monitors) {
+  var out = ({})
+  if (!monitors || monitors < 1) return out
+
+  for (var key in workspaceMap) {
+    var wsId = Number(key)
+    var vdesk = vdeskOf(wsId, monitors)
+    if (vdesk <= 0) continue
+
+    var entry = out[vdesk]
+    if (!entry) {
+      entry = { id: vdesk, windows: [] }
+      out[vdesk] = entry
+    }
+    entry.windows = entry.windows.concat(workspaceMap[key].windows || [])
+  }
+
+  for (var id in out) out[id].windows = sortWindows(out[id].windows)
+  return out
 }
 
 // Stable key identifying "the same app" across windows.
@@ -613,6 +657,7 @@ if (typeof module !== "undefined") {
     agentProcessIds: agentProcessIds, pruneDeadAgents: pruneDeadAgents,
     previewWidth: previewWidth, previewDimensions: previewDimensions, monitorArea: monitorArea, previewLayout: previewLayout, durationFor: durationFor,
     workspaceIds: workspaceIds, workspaceLabel: workspaceLabel, appKey: appKey,
+    vdeskOf: vdeskOf, vdeskMap: vdeskMap,
     sortWindows: sortWindows, iconItems: iconItems, truncate: truncate,
     focusedLabel: focusedLabel, webAppHost: webAppHost, appIdCandidates: appIdCandidates, iconPathScore: iconPathScore,
     iconNameFromPath: iconNameFromPath, stepWorkspace: stepWorkspace, mergedEntry: mergedEntry,

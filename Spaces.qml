@@ -99,6 +99,39 @@ Panel {
     if (root.currentWorkspaceId === root.previewWorkspaceId) root.hidePreview()
   }
 
+  // ---------------------------------------------------- virtual desktops
+  //
+  // With the hyprland-virtual-desktops plugin loaded, each logical desktop
+  // owns one workspace per monitor, numbered contiguously: vdesk N owns
+  // workspaces (N-1)*monitors+1 .. N*monitors (two monitors: vdesk 1 owns
+  // workspaces 1 and 2). In virtual-desktops mode the pills address vdesks
+  // instead of raw workspaces -- labelled by vdesk number to match the
+  // SUPER+N keybinds, aggregating the icons of every workspace in the vdesk,
+  // and a click switches the whole desktop so the monitors cannot end up on
+  // different ones.
+
+  readonly property bool vdeskMode: cfg.virtualDesktops
+
+  // Same fallback reasoning as the workspaces widget: the monitor list can
+  // come back empty while the bar is still loading, and 1 is the correct
+  // answer on a single-display setup anyway.
+  readonly property int monitorCount: {
+    try {
+      var n = Hyprland.monitors.values.length
+      if (n >= 1) return n
+    } catch (e) { }
+    return 1
+  }
+
+  readonly property var vdeskMap: Model.vdeskMap(root.workspaceMap, root.monitorCount)
+  readonly property int currentVdesk: Model.vdeskOf(root.currentWorkspaceId, root.monitorCount)
+  readonly property int previousVdesk: Model.vdeskOf(root.previousWorkspaceId, root.monitorCount)
+
+  // What "the active pill" means: a vdesk in virtual-desktops mode, else a
+  // workspace id. Everything that compares pills against "where I am" goes
+  // through this.
+  readonly property int currentPillId: root.vdeskMode ? root.currentVdesk : root.currentWorkspaceId
+
   // Addresses (normalized) of windows that requested attention and have not
   // been focused since.
   property var urgentAddresses: ({})
@@ -306,7 +339,7 @@ Panel {
     root.revision
     var values = Hyprland.workspaces.values
     var activeToplevel = Hyprland.activeToplevel
-    var perMonitor = cfg.perMonitor && root.monitor !== null
+    var perMonitor = cfg.perMonitor && root.monitor !== null && !vdeskMode
     var map = ({})
 
     for (var i = 0; i < values.length; i++) {
@@ -344,12 +377,26 @@ Panel {
 
   readonly property var workspaceIds: {
     var occupied = ({})
-    for (var id in workspaceMap) occupied[id] = workspaceMap[id].windows.length
-    var active = root.currentWorkspaceId > 0 ? [root.currentWorkspaceId] : []
+    var activeId
+
+    if (vdeskMode) {
+      // Pills are virtual desktops; a vdesk is occupied if any of its workspaces is.
+      for (var vid in vdeskMap) occupied[vid] = vdeskMap[vid].windows.length
+      activeId = root.currentVdesk > 0 ? root.currentVdesk : 0
+    } else {
+      for (var id in workspaceMap) occupied[id] = workspaceMap[id].windows.length
+      activeId = root.currentWorkspaceId > 0 ? root.currentWorkspaceId : 0
+    }
+
+    var active = activeId > 0 ? [activeId] : []
     return Model.workspaceIds(occupied, active, cfg.persistentWorkspaces, cfg.hideEmpty)
   }
 
   function focusWorkspace(id) {
+    if (vdeskMode) {
+      run("hyprctl eval " + Util.shellQuote("hl.plugin.virtual_desktops.vdesk('" + id + "')"))
+      return
+    }
     run("hyprctl dispatch " + Util.shellQuote("hl.dsp.focus({ workspace = \"" + id + "\" })"))
   }
 
@@ -366,8 +413,11 @@ Panel {
   }
 
   function clickWorkspace(id) {
-    if (id === root.currentWorkspaceId) {
-      if (root.cfg.activeClick === "previous" && root.previousWorkspaceId > 0) focusWorkspace(root.previousWorkspaceId)
+    if (id === root.currentPillId) {
+      if (root.cfg.activeClick === "previous") {
+        var back = root.vdeskMode ? root.previousVdesk : root.previousWorkspaceId
+        if (back > 0 && back !== id) focusWorkspace(back)
+      }
       return
     }
     focusWorkspace(id)
@@ -385,8 +435,9 @@ Panel {
 
   function scrollBy(delta) {
     if (!cfg.scrollSwitch || delta === 0) return
-    var next = Model.stepWorkspace(root.workspaceIds, root.currentWorkspaceId, delta < 0 ? 1 : -1)
-    if (next !== root.currentWorkspaceId) focusWorkspace(next)
+    var current = root.currentPillId
+    var next = Model.stepWorkspace(root.workspaceIds, current, delta < 0 ? 1 : -1)
+    if (next !== current) focusWorkspace(next)
   }
 
   function showTip(target, text) {
@@ -581,12 +632,12 @@ Panel {
   property string highlightAddress: ""
 
   readonly property bool previewOpen: previewWanted && previewWorkspaceId > 0 && !root.opened
-    && root.cfg.previews && !!root.workspaceMap[previewWorkspaceId]
+    && root.cfg.previews && !root.vdeskMode && !!root.workspaceMap[previewWorkspaceId]
     && root.workspaceMap[previewWorkspaceId].windows.length > 0
 
   function pillHovered(pill, hovered) {
-    if (!root.cfg.previews) return
-    if (hovered && pill.workspaceId !== root.currentWorkspaceId && pill.occupied) {
+    if (!root.cfg.previews || root.vdeskMode) return
+    if (hovered && pill.workspaceId !== root.currentPillId && pill.occupied) {
       previewHideTimer.stop()
       root.previewPill = pill
       if (root.previewOpen) {
@@ -640,6 +691,7 @@ Panel {
   // Opens the preview for a workspace without hovering, e.g. from a
   // keybinding. Closes on its own unless the pointer moves onto the card.
   function peek(id) {
+    if (root.vdeskMode) return false
     var idx = root.workspaceIds.indexOf(Number(id))
     var pill = idx >= 0 ? pillRepeater.itemAt(idx) : null
     if (!pill || !pill.occupied) return false
@@ -780,8 +832,10 @@ Panel {
 
         required property var modelData
         readonly property int workspaceId: Number(modelData)
-        readonly property var workspace: root.workspaceMap[workspaceId] || ({ id: workspaceId, windows: [] })
-        readonly property bool active: workspaceId === root.currentWorkspaceId
+        readonly property var workspace: (root.vdeskMode
+          ? root.vdeskMap[workspaceId]
+          : root.workspaceMap[workspaceId]) || ({ id: workspaceId, windows: [] })
+        readonly property bool active: workspaceId === root.currentPillId
         readonly property bool occupied: workspace.windows.length > 0
         readonly property bool hovered: pillHover.hovered || pillMouse.containsMouse
         onHoveredChanged: root.pillHovered(pill, hovered)

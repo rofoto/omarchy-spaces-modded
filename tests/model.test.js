@@ -36,6 +36,48 @@ test("workspaceLabel", () => {
   assert.strictEqual(M.workspaceLabel(3, false, "glyph"), "3")
 })
 
+test("vdeskOf bundles workspaces into vdesks by monitor count", () => {
+  // Two monitors: vdesk N owns workspaces (N-1)*2+1 .. N*2.
+  assert.strictEqual(M.vdeskOf(1, 2), 1)
+  assert.strictEqual(M.vdeskOf(2, 2), 1)
+  assert.strictEqual(M.vdeskOf(3, 2), 2)
+  assert.strictEqual(M.vdeskOf(4, 2), 2)
+  // One monitor: every workspace is its own vdesk.
+  assert.strictEqual(M.vdeskOf(5, 1), 5)
+  // Degenerate ids and monitor counts are not vdesks.
+  assert.strictEqual(M.vdeskOf(0, 2), 0)
+  assert.strictEqual(M.vdeskOf(-3, 2), 0)
+  assert.strictEqual(M.vdeskOf(3, 0), 0)
+})
+
+test("vdeskMap merges member workspaces and sorts windows", () => {
+  const map = {
+    1: { windows: [{ address: "b", appId: "term" }] },
+    2: { windows: [{ address: "a", appId: "browser" }, { address: "c", appId: "editor" }] },
+    3: { windows: [{ address: "d", appId: "files" }] }
+  }
+  const v = M.vdeskMap(map, 2)
+  assert.deepStrictEqual(Object.keys(v).map(Number).sort((x, y) => x - y), [1, 2])
+  assert.strictEqual(v[1].id, 1)
+  // sortWindows orders by position; position-less windows keep concat order,
+  // so member workspaces contribute theirs in workspace order.
+  assert.deepStrictEqual(v[1].windows.map(w => w.address), ["b", "a", "c"])
+  assert.deepStrictEqual(v[2].windows.map(w => w.address), ["d"])
+  assert.deepStrictEqual(M.vdeskMap(map, 0), {})
+})
+
+test("vdeskMode pills are vdesk ids fed through workspaceIds", () => {
+  // Mirrors the Spaces.qml vdesk branch: occupied counts are vdesk window
+  // totals, the active pill is the current vdesk.
+  const v = M.vdeskMap({ 1: { windows: [{ address: "a" }] }, 2: { windows: [] }, 3: { windows: [{ address: "b" }, { address: "c" }] } }, 2)
+  const occupied = {}
+  for (const vid in v) occupied[vid] = v[vid].windows.length
+  assert.deepStrictEqual(M.workspaceIds(occupied, [1], 0, true), [1, 2])
+  assert.deepStrictEqual(M.workspaceIds(occupied, [1], 4, false), [1, 2, 3, 4])
+  // Labels are vdesk numbers, so vdesk 1 reads "1" and vdesk 10 reads "0".
+  assert.strictEqual(M.workspaceLabel(1, true, "number"), "1")
+})
+
 test("sortWindows orders by x then y, unknown last", () => {
   const w = [{ id: "a", at: [500, 0] }, { id: "b" }, { id: "c", at: [10, 300] }, { id: "d", at: [10, 5] }]
   assert.deepStrictEqual(M.sortWindows(w).map(x => x.id), ["d", "c", "a", "b"])

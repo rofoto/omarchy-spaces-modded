@@ -138,6 +138,12 @@
         "default": false
       },
       {
+        "key": "virtualDesktops",
+        "type": "bool",
+        "label": "Virtual desktop pills (hyprland-virtual-desktops)",
+        "default": false
+      },
+      {
         "key": "scrollSwitch",
         "type": "bool",
         "label": "Scroll to switch workspaces",
